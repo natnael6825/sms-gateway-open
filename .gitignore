@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.expo/
+.expo-build-check/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+mobile/android/.gradle/
+mobile/android/.kotlin/
+mobile/android/app/.cxx/
+mobile/android/app/build/
+mobile/android/local.properties

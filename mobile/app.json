@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "SMS Gateway",
+    "slug": "sms-gateway",
+    "version": "1.0.0",
+    "icon": "./icon.png",
+    "notification": {
+      "icon": "./icon.png"
+    },
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b8b0805b-92aa-461b-aab3-873b1050004e"
+      }
+    },
+    "android": {
+      "package": "com.natnaelfikre.smsgateway"
+    }
+  }
+}

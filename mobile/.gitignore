@@ -1,0 +1,10 @@
+node_modules
+.expo
+.expo-shared
+dist
+dist-export-check
+dist-export-check-2
+dist-export-check-54
+web-build
+coverage
+*.log

@@ -1,0 +1,11 @@
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+.gradle/
+dist/
+dist-export-check/
+dist-export-check-2/
+dist-export-check-54/
+.expo/
+*.log

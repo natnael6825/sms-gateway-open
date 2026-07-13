@@ -1,0 +1,94 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   Int           @id @default(autoincrement())
+  email                String        @unique
+  password             String
+  must_change_password Boolean       @default(true)
+  device_key           String?       @unique
+  created_at           DateTime      @default(now())
+  messages             Message[]
+  api_keys             ApiKey[]
+  devices              Device[]
+  pairing_codes        PairingCode[]
+}
+
+model Message {
+  id              Int           @id @default(autoincrement())
+  public_id       String        @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         Int
+  phone_number    String
+  message_text    String
+  status          MessageStatus @default(pending)
+  source          MessageSource @default(dashboard)
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+  dispatched_at   DateTime?
+  delivered_at    DateTime?
+  send_started_at DateTime?
+  device_id       Int?
+  api_key_id      Int?
+  user            User          @relation(fields: [user_id], references: [id])
+  device          Device?       @relation(fields: [device_id], references: [id])
+  api_key         ApiKey?       @relation(fields: [api_key_id], references: [id], onDelete: SetNull)
+
+  @@index([api_key_id])
+}
+
+enum MessageStatus {
+  pending
+  dispatched
+  sent
+  failed
+}
+
+enum MessageSource {
+  dashboard
+  api
+}
+
+model ApiKey {
+  id           Int       @id @default(autoincrement())
+  user_id      Int
+  key_hash     String    @unique
+  key_hint     String    @default("sms_••••••••")
+  name         String    @default("API key")
+  usage_count  Int       @default(0)
+  last_used_at DateTime?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+  user         User      @relation(fields: [user_id], references: [id])
+  messages     Message[]
+}
+
+model Device {
+  id                Int       @id @default(autoincrement())
+  user_id           Int
+  device_identifier String
+  name              String    @default("Unknown Device")
+  model             String    @default("Unknown")
+  paired_at         DateTime  @default(now())
+  last_seen         DateTime?
+  is_active         Boolean   @default(true)
+  is_connected      Boolean   @default(false)
+  messages_sent     Int       @default(0)
+  user              User      @relation(fields: [user_id], references: [id])
+  messages          Message[]
+}
+
+model PairingCode {
+  id         Int       @id @default(autoincrement())
+  user_id    Int
+  code       String    @unique
+  expires_at DateTime
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+  user       User      @relation(fields: [user_id], references: [id])
+}

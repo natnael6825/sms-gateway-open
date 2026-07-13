@@ -1,0 +1,42 @@
+{
+  "name": "sms-gateway-mobile",
+  "version": "1.0.0",
+  "description": "SMS Gateway Mobile App",
+  "main": "expo/AppEntry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "test": "jest --runInBand --forceExit --testTimeout=30000"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~6.1.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~54.0.35",
+    "expo-av": "~16.0.8",
+    "expo-background-fetch": "~14.0.9",
+    "expo-sms": "~14.0.8",
+    "expo-task-manager": "~14.0.9",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-web": "^0.21.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@testing-library/react-native": "12.5.1",
+    "babel-jest": "29.7.0",
+    "babel-preset-expo": "^54.0.11",
+    "fast-check": "3.19.0",
+    "jest": "29.7.0",
+    "jest-expo": "~54.0.17",
+    "react-test-renderer": "19.1.0"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "setupFiles": [
+      "<rootDir>/jest.setup.js"
+    ]
+  }
+}

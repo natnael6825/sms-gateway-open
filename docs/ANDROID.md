@@ -1,0 +1,129 @@
+# Android and ADB setup
+
+## Install the compiled APK
+
+Open the [official SignalDesk EAS build](https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/47e2635c-ba6b-4f92-ab72-aeb35ddab681) on the Android phone and download the APK. Allow installation from the browser or file manager when Android asks. If Google Play Protect offers to scan the APK, choose **Scan app**, wait for it to finish, and then complete installation. Do not disable Play Protect.
+
+The shared APK is standalone and does not require Metro. After installation, follow the restricted-permission instructions below if Android blocks SMS access.
+
+## Install a development APK
+
+1. Install Android Studio, including Android SDK Platform Tools, or install the standalone platform tools.
+2. On the phone, enable **Developer options** by tapping **Build number** seven times.
+3. Enable **USB debugging**, connect by USB, and approve the computer prompt.
+4. Verify the connection with `adb devices`. The device should show as `device`, not `unauthorized`.
+5. From `mobile`, run `npm install` and `npm run android`.
+
+This app contains native Kotlin SMS modules and cannot send silently from Expo Go. Use an EAS development/production build or `expo run:android`.
+
+For an EAS APK, install EAS CLI, authenticate, and run `eas build --platform android --profile preview`. Install the resulting APK, grant SMS and notification permissions, and exclude the app from aggressive battery optimization when the manufacturer provides that option.
+
+## Pair with any backend
+
+Open the app, enter the complete backend URL (for example `https://sms.example.com`) and the seven-character code from **Dashboard → Devices**. The app validates and stores the URL locally. Unpairing clears both the device token and URL.
+
+For LAN development, use the computer's LAN address such as `http://192.168.1.20:6700`; `localhost` points to the phone. Ensure the firewall permits the port. Cleartext HTTP should only be used on a trusted development network.
+
+## Fix “App was denied access” for SMS permission
+
+Recent Android versions may classify SMS as a restricted permission when SignalDesk is installed from a downloaded or directly shared APK. The SMS permission screen can then disable **Allow** and display **App was denied access**. This is an Android sideloading protection, not a backend or pairing error.
+
+On the phone:
+
+1. Close the warning.
+2. Open **Settings → Apps → SMS Gateway**.
+3. Open the three-dot menu in the top-right.
+4. Select **Allow restricted settings** and confirm with the device PIN or fingerprint.
+5. Return to **Permissions → SMS** and select **Allow**.
+6. Reopen SignalDesk.
+
+On Samsung devices the option is commonly under **Settings → Apps → SMS Gateway → More options → Allow restricted settings**. Menu wording varies by manufacturer and Android version.
+
+If the option is unavailable, connect an owner-controlled phone with USB debugging and grant the permission over ADB:
+
+```bash
+adb devices
+adb shell pm grant com.natnaelfikre.smsgateway android.permission.SEND_SMS
+adb shell pm grant com.natnaelfikre.smsgateway android.permission.POST_NOTIFICATIONS
+```
+
+Confirm the SMS grant on Windows PowerShell with:
+
+```powershell
+adb shell dumpsys package com.natnaelfikre.smsgateway | Select-String "SEND_SMS"
+```
+
+Every person who sideloads the APK may need to enable restricted settings on their own phone. Google Play distribution is different: apps requesting SMS permissions are subject to Google Play's restricted-permission policy and may require approval or eligibility as a permitted core use case.
+
+## Diagnose sending
+
+- `adb logcat | findstr /i "SMS Service SignalDesk"` on Windows shows device logs.
+- Confirm the phone can send a normal SMS with its default messaging app.
+- Confirm `GET /health` and the dashboard work from the phone's browser.
+- Check SMS permission, SIM selection, credit, carrier rules, and battery optimization.
+
+Android and carriers can throttle or block high-volume SMS. SignalDesk cannot disable platform or carrier safeguards. Increase sending volume gradually and test only legitimate, consent-based traffic.
+
+## Connect ADB and adjust Android outgoing-check settings
+
+Watch the [ADB connection video walkthrough](https://www.youtube.com/watch?v=zfMkeni1z-Q), then complete the steps below in order. Install the latest [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools) first.
+
+### 1. Connect over USB
+
+Enable **Developer options** and **USB debugging**, connect the unlocked phone by USB, and approve the computer's RSA prompt. Then run:
+
+```bash
+adb kill-server
+adb start-server
+adb devices -l
+```
+
+The phone must appear with the state `device`. If it says `unauthorized`, unlock the phone, approve the prompt, and run `adb devices -l` again.
+
+### Optional: connect wirelessly on Android 11 or newer
+
+Put the computer and phone on the same Wi-Fi network. On the phone, open **Developer options → Wireless debugging → Pair device with pairing code**. Substitute the IP address and ports displayed by Android; the pairing port and connection port can be different.
+
+```bash
+adb pair PHONE_IP:PAIRING_PORT
+adb connect PHONE_IP:CONNECTION_PORT
+adb devices -l
+```
+
+### 2. Test the connection
+
+Run a harmless model query and shell echo before changing settings:
+
+```bash
+adb shell getprop ro.product.model
+adb shell echo SignalDesk_ADB_OK
+```
+
+### 3. Record the current values
+
+Some Android versions expose the SMS outgoing-check window through global settings:
+
+```bash
+adb shell settings get global sms_outgoing_check_max_count
+adb shell settings get global sms_outgoing_check_interval_ms
+```
+
+### 4. Change and verify the values
+
+This example requests a maximum of 100 messages per 60-second check window:
+
+```bash
+adb shell settings put global sms_outgoing_check_max_count 100
+adb shell settings put global sms_outgoing_check_interval_ms 60000
+adb shell settings get global sms_outgoing_check_max_count
+adb shell settings get global sms_outgoing_check_interval_ms
+```
+
+OEM firmware may ignore these settings, and carriers can enforce separate limits. Restore Android defaults with:
+
+```bash
+adb shell settings delete global sms_outgoing_check_max_count
+adb shell settings delete global sms_outgoing_check_interval_ms
+```
+
+Do not use these controls to evade platform, carrier, consent, or legal safeguards.

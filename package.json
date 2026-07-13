@@ -1,0 +1,11 @@
+{
+  "name": "signaldesk",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "test": "npm --prefix backend test && npm --prefix frontend test && npm --prefix mobile test",
+    "build": "npm --prefix frontend run build"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "sms-gateway-backend",
+  "version": "1.0.0",
+  "description": "SMS Gateway Backend API",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest --runInBand --forceExit --testTimeout=30000"
+  },
+  "dependencies": {
+    "@prisma/client": "5.14.0",
+    "bcrypt": "5.1.1",
+    "cors": "2.8.5",
+    "dotenv": "16.4.5",
+    "express": "4.19.2",
+    "jsonwebtoken": "9.0.2",
+    "prisma": "5.14.0"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "devDependencies": {
+    "fast-check": "3.19.0",
+    "jest": "29.7.0",
+    "nodemon": "3.1.4",
+    "supertest": "7.0.0"
+  }
+}
