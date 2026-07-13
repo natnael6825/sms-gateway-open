@@ -160,7 +160,7 @@ Open [http://localhost:5173](http://localhost:5173), sign in with `ADMIN_EMAIL` 
 > [!WARNING]
 > A physical phone cannot reach your computer through `localhost`. During LAN testing, use a reachable address such as `http://192.168.1.20:6700`. For a deployed gateway, use its public HTTPS backend URL.
 
-See the full [Android, permissions, EAS, and ADB guide](docs/ANDROID.md) for manufacturer-specific permission help and diagnostics.
+See the full [Android, permissions, EAS, and SMS-limit guide](docs/ANDROID.md) for manufacturer-specific permission help and the one-time ADB limit change.
 
 ### Compile a development app locally
 
@@ -224,7 +224,7 @@ Read the [complete HTTP API guide](docs/API.md) for response fields, error codes
 | Guide | Covers |
 | --- | --- |
 | [Deployment](docs/DEPLOYMENT.md) | Environment variables, HTTPS reverse proxies, dashboard builds, and upgrades |
-| [Android and ADB](docs/ANDROID.md) | APK installation, restricted SMS permission, pairing, diagnostics, and Android limits |
+| [Android and SMS limit](docs/ANDROID.md) | APK installation, restricted SMS permission, pairing, and the one-time Android SMS-limit setup |
 | [HTTP API](docs/API.md) | Authentication, sending, UUID status checks, and lifecycle fields |
 | [Production security](docs/SECURITY.md) | Secrets, network exposure, backups, key handling, and responsible operation |
 

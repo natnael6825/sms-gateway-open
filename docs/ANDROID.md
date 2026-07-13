@@ -1,4 +1,4 @@
-# Android and ADB setup
+# Android setup and SMS limit
 
 ## Install the compiled APK
 
@@ -39,84 +39,52 @@ On the phone:
 
 On Samsung devices the option is commonly under **Settings → Apps → SMS Gateway → More options → Allow restricted settings**. Menu wording varies by manufacturer and Android version.
 
-If the option is unavailable, connect an owner-controlled phone with USB debugging and grant the permission over ADB:
-
-```bash
-adb devices
-adb shell pm grant com.natnaelfikre.smsgateway android.permission.SEND_SMS
-adb shell pm grant com.natnaelfikre.smsgateway android.permission.POST_NOTIFICATIONS
-```
-
-Confirm the SMS grant on Windows PowerShell with:
-
-```powershell
-adb shell dumpsys package com.natnaelfikre.smsgateway | Select-String "SEND_SMS"
-```
-
 Every person who sideloads the APK may need to enable restricted settings on their own phone. Google Play distribution is different: apps requesting SMS permissions are subject to Google Play's restricted-permission policy and may require approval or eligibility as a permitted core use case.
 
 ## Diagnose sending
 
-- `adb logcat | findstr /i "SMS Service SignalDesk"` on Windows shows device logs.
 - Confirm the phone can send a normal SMS with its default messaging app.
 - Confirm `GET /health` and the dashboard work from the phone's browser.
 - Check SMS permission, SIM selection, credit, carrier rules, and battery optimization.
 
 Android and carriers can throttle or block high-volume SMS. SignalDesk cannot disable platform or carrier safeguards. Increase sending volume gradually and test only legitimate, consent-based traffic.
 
-## Connect ADB and adjust Android outgoing-check settings
+## Increase Android's SMS limit with ADB
 
-Watch the [ADB connection video walkthrough](https://www.youtube.com/watch?v=zfMkeni1z-Q), then complete the steps below in order. Install the latest [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools) first.
+For owner setup, ADB is used only to change Android's outgoing SMS threshold. It is not required for SignalDesk pairing, normal sending, or keeping the phone connected.
 
 ### 1. Connect over USB
 
-Enable **Developer options** and **USB debugging**, connect the unlocked phone by USB, and approve the computer's RSA prompt. Then run:
+Install the latest [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools). Enable **Developer options** and **USB debugging**, connect the unlocked phone with a data-capable USB cable, select **File transfer / Android Auto**, and run:
 
 ```bash
-adb kill-server
-adb start-server
 adb devices -l
 ```
 
-The phone must appear with the state `device`. If it says `unauthorized`, unlock the phone, approve the prompt, and run `adb devices -l` again.
+When **Allow USB debugging?** appears on the phone, check **Always allow from this computer**, then tap **Allow**. Run `adb devices -l` again; the phone must appear with the state `device`.
 
-### Optional: connect wirelessly on Android 11 or newer
+### 2. Increase and verify the limit
 
-Put the computer and phone on the same Wi-Fi network. On the phone, open **Developer options → Wireless debugging → Pair device with pairing code**. Substitute the IP address and ports displayed by Android; the pairing port and connection port can be different.
-
-```bash
-adb pair PHONE_IP:PAIRING_PORT
-adb connect PHONE_IP:CONNECTION_PORT
-adb devices -l
-```
-
-### 2. Test the connection
-
-Run a harmless model query and shell echo before changing settings:
-
-```bash
-adb shell getprop ro.product.model
-adb shell echo SignalDesk_ADB_OK
-```
-
-### 3. Record the current values
-
-Some Android versions expose the SMS outgoing-check window through global settings:
+Read the current values first. `null` means Android is using its built-in defaults:
 
 ```bash
 adb shell settings get global sms_outgoing_check_max_count
 adb shell settings get global sms_outgoing_check_interval_ms
 ```
 
-### 4. Change and verify the values
-
-This example requests a maximum of 100 messages per 60-second check window:
+Then set the Android-side threshold to 1,000 messages per 60-second check window and read both values back:
 
 ```bash
-adb shell settings put global sms_outgoing_check_max_count 100
+adb shell settings put global sms_outgoing_check_max_count 1000
 adb shell settings put global sms_outgoing_check_interval_ms 60000
 adb shell settings get global sms_outgoing_check_max_count
 adb shell settings get global sms_outgoing_check_interval_ms
+```
+
+After both verification commands return the new values, restart the phone so the telephony service reloads them:
+
+```bash
+adb reboot
 ```
 
 OEM firmware may ignore these settings, and carriers can enforce separate limits. Restore Android defaults with:
@@ -124,6 +92,20 @@ OEM firmware may ignore these settings, and carriers can enforce separate limits
 ```bash
 adb shell settings delete global sms_outgoing_check_max_count
 adb shell settings delete global sms_outgoing_check_interval_ms
+```
+
+### 3. Fix common connection problems
+
+- `adb` is not recognized: open the terminal inside the extracted `platform-tools` folder, or use `.\adb.exe` on Windows and `./adb` on macOS or Linux.
+- `unauthorized`: keep the phone unlocked, revoke USB debugging authorizations, reconnect, check **Always allow from this computer**, and tap **Allow**. Do not set `$ADB_VENDOR_KEYS` manually.
+- Samsung does not show the prompt: temporarily turn off **Settings → Security and privacy → Auto Blocker**, then turn it back on after changing the limit.
+- No device is listed: use a data-capable cable, select File transfer mode, try another USB port, and install the manufacturer's Windows USB driver.
+- `offline`: unplug the phone, restart ADB, reconnect, and approve the prompt again.
+
+```bash
+adb kill-server
+adb start-server
+adb devices -l
 ```
 
 Do not use these controls to evade platform, carrier, consent, or legal safeguards.
