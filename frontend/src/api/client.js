@@ -11,9 +11,59 @@ client.interceptors.request.use((config) => {
 });
 
 // Messages
-export async function getMessages() {
-  const res = await client.get('/api/messages');
-  return res.data;
+export function normalizeMessagesResponse(data, { page = 1, pageSize = 10, status = 'all' } = {}) {
+  const requestedPage = Number.isInteger(Number(page)) && Number(page) > 0 ? Number(page) : 1;
+  const requestedPageSize = Number.isInteger(Number(pageSize)) && Number(pageSize) > 0 ? Number(pageSize) : 10;
+
+  // Older SignalDesk backends return the complete message array even when
+  // pagination query parameters are present. Slice it locally so the current
+  // dashboard remains usable during a rolling upgrade.
+  if (Array.isArray(data)) {
+    const filtered = status && status !== 'all'
+      ? data.filter(message => message.status === status)
+      : data;
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / requestedPageSize);
+    const start = (requestedPage - 1) * requestedPageSize;
+
+    return {
+      messages: filtered.slice(start, start + requestedPageSize),
+      pagination: {
+        page: requestedPage,
+        page_size: requestedPageSize,
+        total,
+        total_pages: totalPages,
+        has_previous: requestedPage > 1,
+        has_next: requestedPage < totalPages,
+      },
+    };
+  }
+
+  const pagination = data?.pagination ?? {};
+  const normalizedPage = Number(pagination.page) || requestedPage;
+  const normalizedPageSize = Number(pagination.page_size ?? pagination.pageSize) || requestedPageSize;
+  const total = Number(pagination.total) || 0;
+  const totalPages = Number(pagination.total_pages ?? pagination.totalPages)
+    || Math.ceil(total / normalizedPageSize);
+
+  return {
+    messages: Array.isArray(data?.messages) ? data.messages : [],
+    pagination: {
+      page: normalizedPage,
+      page_size: normalizedPageSize,
+      total,
+      total_pages: totalPages,
+      has_previous: pagination.has_previous ?? pagination.hasPrevious ?? normalizedPage > 1,
+      has_next: pagination.has_next ?? pagination.hasNext ?? normalizedPage < totalPages,
+    },
+  };
+}
+
+export async function getMessages({ page = 1, pageSize = 10, status = 'all' } = {}) {
+  const res = await client.get('/api/messages', {
+    params: { page, page_size: pageSize, status },
+  });
+  return normalizeMessagesResponse(res.data, { page, pageSize, status });
 }
 
 export async function sendMessage(phone_number, message_text) {
@@ -24,6 +74,17 @@ export async function sendMessage(phone_number, message_text) {
 // Analytics
 export async function getAnalyticsSummary() {
   const res = await client.get('/api/analytics/summary');
+  return res.data;
+}
+
+export async function getOverviewAnalytics({ from, to, timezone_offset } = {}) {
+  const params = {
+    timezone_offset: timezone_offset ?? -new Date().getTimezoneOffset(),
+  };
+  if (from) params.from = from;
+  if (to) params.to = to;
+
+  const res = await client.get('/api/analytics/overview', { params });
   return res.data;
 }
 

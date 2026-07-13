@@ -8,6 +8,21 @@ const VALID_TRANSITIONS = {
   sent: [],
 };
 
+const MESSAGE_LIST_STATUSES = new Set(['pending', 'dispatched', 'sent', 'failed']);
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
+
+function parsePositiveInteger(value, max = Number.MAX_SAFE_INTEGER) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 && value <= max ? value : null;
+  }
+
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= max ? parsed : null;
+}
+
 /**
  * POST /api/messages
  * Validates phone_number and message_text, creates a pending message
@@ -43,19 +58,79 @@ async function createMessage(req, res) {
 
 /**
  * GET /api/messages
- * Returns all messages belonging to the authenticated user,
- * ordered by created_at descending (newest first).
- * Returns HTTP 200 with a JSON array of messages.
+ * Returns messages belonging to the authenticated user, ordered newest first.
+ * Without page, page_size, or status query parameters, the legacy JSON array
+ * response is preserved. Supplying any of those parameters enables pagination.
  */
 async function getUserMessages(req, res) {
-  try {
-    const messages = await prisma.message.findMany({
-      where: { user_id: req.user.userId },
-      orderBy: { created_at: 'desc' },
-      include: { device: { select: { id: true, name: true, model: true } } },
-    });
+  const query = req.query || {};
+  const paginationRequested = ['page', 'page_size', 'status']
+    .some((key) => Object.prototype.hasOwnProperty.call(query, key));
 
-    return res.status(200).json(messages);
+  if (!paginationRequested) {
+    try {
+      const messages = await prisma.message.findMany({
+        where: { user_id: req.user.userId },
+        orderBy: { created_at: 'desc' },
+        include: { device: { select: { id: true, name: true, model: true } } },
+      });
+
+      return res.status(200).json(messages);
+    } catch (err) {
+      console.error('getUserMessages error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  const page = Object.prototype.hasOwnProperty.call(query, 'page')
+    ? parsePositiveInteger(query.page)
+    : 1;
+  if (page === null) {
+    return res.status(400).json({ error: 'page must be a positive integer' });
+  }
+
+  const pageSize = Object.prototype.hasOwnProperty.call(query, 'page_size')
+    ? parsePositiveInteger(query.page_size, MAX_PAGE_SIZE)
+    : DEFAULT_PAGE_SIZE;
+  if (pageSize === null) {
+    return res.status(400).json({ error: `page_size must be an integer between 1 and ${MAX_PAGE_SIZE}` });
+  }
+
+  const status = query.status;
+  if (status !== undefined && status !== 'all' && !MESSAGE_LIST_STATUSES.has(status)) {
+    return res.status(400).json({
+      error: 'status must be one of: all, pending, dispatched, sent, failed',
+    });
+  }
+
+  try {
+    const where = { user_id: req.user.userId };
+    if (status && status !== 'all') where.status = status;
+
+    const [total, messages] = await Promise.all([
+      prisma.message.count({ where }),
+      prisma.message.findMany({
+        where,
+        orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: { device: { select: { id: true, name: true, model: true } } },
+      }),
+    ]);
+
+    const totalPages = Math.ceil(total / pageSize);
+
+    return res.status(200).json({
+      messages,
+      pagination: {
+        page,
+        page_size: pageSize,
+        total,
+        total_pages: totalPages,
+        has_previous: page > 1,
+        has_next: page < totalPages,
+      },
+    });
   } catch (err) {
     console.error('getUserMessages error:', err);
     return res.status(500).json({ error: 'Internal server error' });

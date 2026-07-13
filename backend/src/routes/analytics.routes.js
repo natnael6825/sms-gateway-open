@@ -5,5 +5,6 @@ const analyticsController = require('../controllers/analytics.controller');
 const router = Router();
 
 router.get('/summary', authMiddleware, analyticsController.getSummary);
+router.get('/overview', authMiddleware, analyticsController.getOverview);
 
 module.exports = router;
