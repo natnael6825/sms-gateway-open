@@ -147,7 +147,7 @@ Open [http://localhost:5173](http://localhost:5173), sign in with `ADMIN_EMAIL` 
 
 ### Use the ready-to-install APK
 
-[![Open the current SignalDesk APK build on Expo](https://img.shields.io/badge/Download-current%20Android%20APK-176B51?style=for-the-badge&logo=expo&logoColor=white)](https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/47e2635c-ba6b-4f92-ab72-aeb35ddab681)
+[![Open the current SignalDesk APK build on Expo](https://img.shields.io/badge/Download-current%20Android%20APK-176B51?style=for-the-badge&logo=expo&logoColor=white)](https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/e2c92d0e-956b-4dfc-bb10-83c5cf21b6b5)
 
 [Watch the short APK installation walkthrough](https://www.youtube.com/shorts/N90_Buk_6O0), then:
 

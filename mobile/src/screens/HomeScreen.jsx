@@ -104,9 +104,11 @@ export default function HomeScreen({
         </View>
 
         {/* Info */}
-        <View style={[s.card, s.infoCard]}>
-          <Text style={s.infoText}>
-            🔔 A persistent notification runs in your status bar to keep this device active as a messaging node. You can lock your phone — messages will still be sent automatically.
+        <View style={[s.card, s.infoCard, !gatewayOnline && s.offlineInfoCard]}>
+          <Text style={[s.infoText, !gatewayOnline && s.offlineInfoText]}>
+            {gatewayOnline
+              ? '🔔 The persistent notification keeps this phone active while the gateway is online. You can lock the phone and messages will still send automatically.'
+              : 'Gateway paused. The background service and its persistent notification are stopped until you go online again.'}
           </Text>
         </View>
 
@@ -154,4 +156,6 @@ const s = StyleSheet.create({
 
   infoCard: { backgroundColor: '#eef2ff' },
   infoText: { fontSize: 13, color: '#4338ca', lineHeight: 20 },
+  offlineInfoCard: { backgroundColor: '#f1f5f9' },
+  offlineInfoText: { color: '#475569' },
 });

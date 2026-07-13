@@ -232,10 +232,6 @@ export default function App() {
     SmsServiceModule.startService(backendUrl, deviceToken)
       .then(() => console.log('[Service] foreground service started'))
       .catch((e) => console.error('[Service] failed to start:', e?.message ?? e));
-
-    return () => {
-      SmsServiceModule.stopService().catch(() => {});
-    };
   }, [deviceToken, tokenLoaded, backendUrl, gatewayOnline]);
 
   // Load device token and hydrate state on startup
@@ -427,23 +423,37 @@ export default function App() {
 
   async function handleToggleGateway() {
     const nextOnline = !gatewayOnline;
+
+    const persistMode = saveGatewayOnline(nextOnline).catch((error) => {
+      console.error('[Gateway] failed to save mode:', error?.message ?? error);
+    });
+    setGatewayOnline(nextOnline);
+
     if (!nextOnline) {
-      try {
-        await fetch(`${backendUrl}/api/device/disconnect`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Device-Token': deviceToken },
-          body: '{}',
-        });
-      } catch (_) {
-        // The backend will also mark the device offline when heartbeats stop.
-      }
-      if (SmsServiceModule?.stopService) await SmsServiceModule.stopService().catch(() => {});
       setConnectionStatus('offline');
+
+      // Stopping the local foreground service must not wait for the network.
+      // This removes the persistent notification immediately and guarantees
+      // that the phone cannot claim another message while going offline.
+      const stopService = SmsServiceModule?.stopService
+        ? SmsServiceModule.stopService().catch((error) => {
+            console.error('[Service] failed to stop:', error?.message ?? error);
+          })
+        : Promise.resolve();
+
+      await Promise.all([persistMode, stopService]);
+
+      // The disconnect call only updates the dashboard sooner. If it fails,
+      // the backend will still mark the phone offline when heartbeats stop.
+      void fetch(`${backendUrl}/api/device/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Device-Token': deviceToken },
+        body: '{}',
+      }).catch(() => {});
     } else {
       setConnectionStatus('connecting');
+      await persistMode;
     }
-    await saveGatewayOnline(nextOnline);
-    setGatewayOnline(nextOnline);
   }
 
   function openDrawer() { drawerRef.current?.openDrawer(); }

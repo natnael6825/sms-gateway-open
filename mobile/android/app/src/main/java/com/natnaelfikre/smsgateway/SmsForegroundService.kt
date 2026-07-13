@@ -36,11 +36,18 @@ class SmsForegroundService : Service() {
         private const val POLL_MS = 5_000L
         private const val RECONNECT_MS = 10_000L
         private const val SMS_CONFIRM_TIMEOUT_SEC = 30L
+
+        @Volatile private var notificationUpdatesEnabled = false
+
+        fun disableNotificationUpdates() {
+            notificationUpdatesEnabled = false
+        }
     }
 
     private var apiBaseUrl = ""
     private var deviceToken = ""
     private var loopJob: Job? = null
+    @Volatile private var stopping = false
     private val reportPrefs by lazy { getSharedPreferences("delivery_report_outbox", Context.MODE_PRIVATE) }
 
     override fun onCreate() {
@@ -51,11 +58,13 @@ class SmsForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                removeForegroundNotification()
                 stopSelf()
                 return START_NOT_STICKY
             }
             ACTION_START -> {
+                stopping = false
+                notificationUpdatesEnabled = true
                 apiBaseUrl = intent.getStringExtra(EXTRA_API_URL) ?: ""
                 deviceToken = intent.getStringExtra(EXTRA_DEVICE_TOKEN) ?: ""
                 startForeground(NOTIFICATION_ID, buildNotification("Monitoring for messages…"))
@@ -86,8 +95,10 @@ class SmsForegroundService : Service() {
     }
 
     private fun pollAndSend() {
+        if (stopping) return
         if (deviceToken.isNotEmpty()) runCatching { sendHeartbeat() }
 
+        if (stopping) return
         if (!flushDeliveryReports()) {
             throw RuntimeException("delivery report outbox is waiting for network")
         }
@@ -101,6 +112,7 @@ class SmsForegroundService : Service() {
             return
         }
 
+        if (stopping) return
         val message = JSONObject(body)
         val id = message.getInt("id")
         val phone = message.getString("phone_number")
@@ -242,14 +254,24 @@ class SmsForegroundService : Service() {
             .build()
 
     private fun updateNotification(text: String) {
+        if (stopping || !notificationUpdatesEnabled) return
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    private fun removeForegroundNotification() {
+        stopping = true
+        notificationUpdatesEnabled = false
+        loopJob?.cancel()
+        loopJob = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        loopJob?.cancel()
+        removeForegroundNotification()
         serviceScope.cancel()
         super.onDestroy()
     }

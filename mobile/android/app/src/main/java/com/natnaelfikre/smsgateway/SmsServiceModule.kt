@@ -1,5 +1,7 @@
 package com.natnaelfikre.smsgateway
 
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -29,10 +31,20 @@ class SmsServiceModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun stopService(promise: Promise) {
         try {
-            val intent = Intent(reactApplicationContext, SmsForegroundService::class.java).apply {
-                action = SmsForegroundService.ACTION_STOP
-            }
-            reactApplicationContext.startService(intent)
+            // Stop directly instead of starting the service with a stop action.
+            // Direct stopping also works when Android no longer allows a new
+            // background-service start. The service also performs normal
+            // foreground-notification cleanup from onDestroy.
+            val intent = Intent(reactApplicationContext, SmsForegroundService::class.java)
+            SmsForegroundService.disableNotificationUpdates()
+            reactApplicationContext.stopService(intent)
+
+            // Be defensive for OEMs that retain an ongoing notification after
+            // stopping a foreground service.
+            val notificationManager = reactApplicationContext.getSystemService(
+                Context.NOTIFICATION_SERVICE
+            ) as NotificationManager
+            notificationManager.cancel(SmsForegroundService.NOTIFICATION_ID)
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("SERVICE_ERROR", e.message, e)

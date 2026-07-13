@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const APK_BUILD_URL = 'https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/47e2635c-ba6b-4f92-ab72-aeb35ddab681';
+const APK_BUILD_URL = 'https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/e2c92d0e-956b-4dfc-bb10-83c5cf21b6b5';
 const INSTALL_VIDEO_URL = 'https://www.youtube.com/shorts/N90_Buk_6O0';
 const INSTALL_VIDEO_EMBED_URL = 'https://www.youtube-nocookie.com/embed/N90_Buk_6O0';
 const PLATFORM_TOOLS_URL = 'https://developer.android.com/tools/releases/platform-tools';

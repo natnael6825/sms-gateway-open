@@ -2,7 +2,7 @@
 
 ## Install the compiled APK
 
-Open the [official SignalDesk EAS build](https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/47e2635c-ba6b-4f92-ab72-aeb35ddab681) on the Android phone and download the APK. Allow installation from the browser or file manager when Android asks. If Google Play Protect offers to scan the APK, choose **Scan app**, wait for it to finish, and then complete installation. Do not disable Play Protect.
+Open the [official SignalDesk EAS build](https://expo.dev/accounts/natnaelfikre/projects/sms-gateway/builds/e2c92d0e-956b-4dfc-bb10-83c5cf21b6b5) on the Android phone and download the APK. Allow installation from the browser or file manager when Android asks. If Google Play Protect offers to scan the APK, choose **Scan app**, wait for it to finish, and then complete installation. Do not disable Play Protect.
 
 The shared APK is standalone and does not require Metro. After installation, follow the restricted-permission instructions below if Android blocks SMS access.
 
