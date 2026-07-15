@@ -1,26 +1,35 @@
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react-native';
-import App from '../App';
+import { render, waitFor } from '@testing-library/react-native';
+import { NativeModules } from 'react-native';
 
-// Mock AsyncStorage
+const mockStartService = jest.fn().mockResolvedValue(undefined);
+const mockStopService = jest.fn().mockResolvedValue(undefined);
+let registeredBackgroundTask;
+
+NativeModules.SmsServiceModule = {
+  startService: mockStartService,
+  stopService: mockStopService,
+};
+
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
   removeItem: jest.fn(),
 }));
 
-// Mock storage modules
 jest.mock('../storage/deviceToken', () => ({
   loadDeviceToken: jest.fn(),
   saveDeviceToken: jest.fn().mockResolvedValue(undefined),
   clearDeviceToken: jest.fn().mockResolvedValue(undefined),
 }));
+
 jest.mock('../storage/backendUrl', () => ({
   loadBackendUrl: jest.fn().mockResolvedValue('https://sms.example.com'),
   clearBackendUrl: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../storage/messageState', () => ({
+  addToHistory: jest.fn().mockResolvedValue(undefined),
   loadPendingMessage: jest.fn().mockResolvedValue(null),
   loadLastSentMessage: jest.fn().mockResolvedValue(null),
   getSentTodayCount: jest.fn().mockResolvedValue(0),
@@ -29,38 +38,50 @@ jest.mock('../storage/messageState', () => ({
   recordSentMessage: jest.fn().mockResolvedValue(1),
 }));
 
-// Mock expo modules
+jest.mock('../storage/gatewayMode', () => ({
+  loadGatewayOnline: jest.fn().mockResolvedValue(true),
+  saveGatewayOnline: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('expo-background-fetch', () => ({
-  registerTaskAsync: jest.fn().mockResolvedValue(undefined),
+  unregisterTaskAsync: jest.fn().mockResolvedValue(undefined),
   BackgroundFetchResult: { NewData: 'newData', NoData: 'noData', Failed: 'failed' },
 }));
 
 jest.mock('expo-task-manager', () => ({
-  defineTask: jest.fn(),
+  defineTask: jest.fn((_name, task) => {
+    registeredBackgroundTask = task;
+  }),
+  isTaskRegisteredAsync: jest.fn().mockResolvedValue(false),
 }));
 
+const App = require('../App').default;
 const { loadDeviceToken, clearDeviceToken } = require('../storage/deviceToken');
-const { loadPendingMessage } = require('../storage/messageState');
+
+function successfulApiResponse(url) {
+  if (String(url).endsWith('/api/device/activity')) {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ sent_today: 0, history: [], last_sent: null }),
+    });
+  }
+
+  return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+}
 
 beforeEach(() => {
-  jest.useFakeTimers();
   jest.clearAllMocks();
-  global.fetch = jest.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => null,
-  });
+  loadDeviceToken.mockResolvedValue(null);
+  global.fetch = jest.fn(successfulApiResponse);
 });
 
 afterEach(() => {
-  jest.useRealTimers();
-  jest.resetAllMocks();
+  jest.restoreAllMocks();
 });
 
 describe('App', () => {
-  test('shows PairingScreen when no device token is stored', async () => {
-    loadDeviceToken.mockResolvedValue(null);
-
+  test('shows the pairing form when no device token is stored', async () => {
     const { getByTestId } = render(<App />);
 
     await waitFor(() => {
@@ -69,67 +90,49 @@ describe('App', () => {
     });
   });
 
-  test('shows HomeScreen when device token exists', async () => {
+  test('starts the native foreground service for a paired online device', async () => {
     loadDeviceToken.mockResolvedValue('existing-device-token');
+
+    const { getByText } = render(<App />);
+
+    await waitFor(() => {
+      expect(getByText('SMS Gateway')).toBeTruthy();
+      expect(mockStartService).toHaveBeenCalledWith(
+        'https://sms.example.com',
+        'existing-device-token'
+      );
+    });
+
+    await waitFor(() => {
+      expect(getByText('Connected')).toBeTruthy();
+    });
+  });
+
+  test('keeps the Expo background task passive so only the native service dispatches', async () => {
+    expect(registeredBackgroundTask).toEqual(expect.any(Function));
+
+    await expect(registeredBackgroundTask()).resolves.toBe('noData');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('clears the pairing and returns to the pairing form on a 401 heartbeat', async () => {
+    loadDeviceToken.mockResolvedValue('expired-token');
+    global.fetch.mockImplementation((url) => {
+      if (String(url).endsWith('/api/device/heartbeat')) {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: async () => ({ error: 'Unauthorized' }),
+        });
+      }
+      return successfulApiResponse(url);
+    });
 
     const { getByTestId } = render(<App />);
 
     await waitFor(() => {
-      expect(getByTestId('connection-status')).toBeTruthy();
+      expect(clearDeviceToken).toHaveBeenCalledTimes(1);
+      expect(getByTestId('pairing-code-input')).toBeTruthy();
     });
-  });
-
-  test('calls webhook after dispatch with X-Device-Token header', async () => {
-    loadDeviceToken.mockResolvedValue('my-device-token');
-
-    // Simulate a pending message already in storage (bypasses polling interval)
-    loadPendingMessage.mockResolvedValue({
-      id: 99,
-      phone_number: '+15551234567',
-      message_text: 'Test SMS',
-      status: 'pending',
-    });
-
-    global.fetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => null,
-    });
-
-    render(<App />);
-
-    // Wait for the webhook call to happen (dispatch runs after hydration)
-    await waitFor(() => {
-      const webhookCall = global.fetch.mock.calls.find(
-        ([url]) => url && url.includes('/api/webhook/')
-      );
-      expect(webhookCall).toBeDefined();
-      expect(webhookCall[1]).toEqual(
-        expect.objectContaining({
-          method: 'POST',
-          headers: expect.objectContaining({ 'X-Device-Token': 'my-device-token' }),
-        })
-      );
-    }, { timeout: 5000 });
-  });
-
-  test('clears token and shows PairingScreen on 401 response', async () => {
-    // Use real timers for this test so polling intervals fire naturally
-    jest.useRealTimers();
-
-    loadDeviceToken.mockResolvedValue('expired-token');
-
-    // Return 401 on all fetch calls
-    global.fetch.mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({ error: 'Unauthorized' }),
-    });
-
-    render(<App />);
-
-    await waitFor(() => {
-      expect(clearDeviceToken).toHaveBeenCalled();
-    }, { timeout: 10000 });
   });
 });

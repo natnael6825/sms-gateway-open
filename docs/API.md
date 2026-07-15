@@ -35,7 +35,7 @@ A successful request returns HTTP 201:
 
 Save `id`. It is the public message UUID used for status checks. HTTP 201 confirms that the job entered the queue; it does not confirm that Android sent the SMS.
 
-HTTP 401 means the key is missing or invalid. HTTP 409 with code `NO_CONNECTED_DEVICE` means no active phone has checked in during the last 60 seconds. HTTP 422 means the content is longer than 1600 characters.
+HTTP 401 means the key is missing or invalid. HTTP 409 with code `NO_CONNECTED_DEVICE` means no active phone is currently polling and ready to accept work. HTTP 422 means the content is longer than 1600 characters.
 
 ## Check message status
 
@@ -68,6 +68,9 @@ The endpoint returns the current lifecycle state, timestamps, and assigned Andro
 Lifecycle timestamps remain `null` until their stage occurs. HTTP 400 means the ID is not a UUID, HTTP 401 means the key is invalid, and HTTP 404 means that message does not exist for the authenticated key.
 
 ## Poll until completion
+
+> [!IMPORTANT]
+> A phone's claim is final. SignalDesk does not reassign the same job or expose a manual retry operation. If the phone does not report `sent` or `failed` within 60 seconds, the message becomes terminally `failed`. An intentional second attempt must be submitted as a new message with a new UUID.
 
 Poll every 2–5 seconds while the status is `pending` or `dispatched`. Stop when `terminal` is `true`, which corresponds to `sent` or `failed`. Reuse the UUID; do not submit another send request to check progress. Each status poll increments the API key's authenticated **Request** metric, but does not increment its **Message** or **Sent** counts.
 

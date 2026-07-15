@@ -375,26 +375,6 @@ export default function App() {
     return () => { cancelled = true; };
   }, [currentMessage, deviceToken, backendUrl, setCurrentMessage, setPollingError]);
 
-  // Retry handler: reset a failed message to pending
-  async function handleRetry(messageId) {
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if (deviceToken) {
-        headers['X-Device-Token'] = deviceToken;
-      }
-      const response = await fetch(`${backendUrl}/api/messages/${messageId}/retry`, {
-        method: 'POST',
-        headers,
-      });
-      if (response.ok) {
-        // Trigger a re-poll to pick up the retried message
-        await pollNow();
-      }
-    } catch (error) {
-      console.error('[Retry] failed:', error?.message ?? error);
-    }
-  }
-
   // Don't render until we know whether a token exists
   if (!tokenLoaded) {
     return null;

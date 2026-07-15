@@ -1,70 +1,59 @@
 import React from 'react';
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
 import HomeScreen from '../screens/HomeScreen';
 
 describe('HomeScreen', () => {
-  describe('polling status', () => {
-    test('displays active when polling is healthy', () => {
-      const { getByTestId } = render(
-        <HomeScreen pollingActive={true} pollingError={false} />
-      );
+  test.each([
+    ['connected', 'Connected', 'Polling every 5 seconds. Messages send automatically.'],
+    ['connecting', 'Connecting…', 'Establishing connection to server…'],
+    ['disconnected', 'Disconnected', 'Retrying every 10 seconds…'],
+    ['offline', 'Offline', 'Gateway paused. This phone will not claim or send messages.'],
+  ])('renders the current %s connection state', (status, label, explanation) => {
+    const { getByText } = render(
+      <HomeScreen
+        connectionStatus={status}
+        gatewayOnline={status !== 'offline'}
+      />
+    );
 
-      expect(getByTestId('polling-status').props.children).toBe('Polling: Active');
-    });
-
-    test('displays error and warning when polling fails', () => {
-      const { getByTestId } = render(
-        <HomeScreen pollingActive={false} pollingError={true} />
-      );
-
-      expect(getByTestId('polling-status').props.children).toBe('Polling: Error');
-      expect(getByTestId('polling-warning').props.children).toBe(
-        'Backend unreachable. Retrying automatically.'
-      );
-    });
+    expect(getByText(label)).toBeTruthy();
+    expect(getByText(explanation)).toBeTruthy();
   });
 
-  describe('last message sent', () => {
-    test('displays phone number and message text when lastMessage is provided', () => {
-      const lastMessage = {
-        phone_number: '+15551234567',
-        message_text: 'Hello world',
-      };
+  test('displays the most recently sent message', () => {
+    const lastMessage = {
+      phone_number: '+15551234567',
+      message_text: 'Hello world',
+      sent_at: '2026-07-15T08:00:00.000Z',
+    };
 
-      const { getByTestId } = render(<HomeScreen lastMessage={lastMessage} />);
+    const { getByText } = render(<HomeScreen lastMessage={lastMessage} />);
 
-      expect(getByTestId('last-message-phone').props.children).toBe(
-        '+15551234567'
-      );
-      expect(getByTestId('last-message-text').props.children).toBe('Hello world');
-    });
-
-    test('displays empty state when no message has been sent', () => {
-      const { getByTestId } = render(<HomeScreen lastMessage={null} />);
-
-      expect(getByTestId('no-messages').props.children).toBe(
-        'No messages sent yet'
-      );
-    });
+    expect(getByText('+15551234567')).toBeTruthy();
+    expect(getByText('Hello world')).toBeTruthy();
   });
 
-  describe('sent today count', () => {
-    test('displays the count of messages sent today', () => {
-      const { getByTestId } = render(<HomeScreen sentTodayCount={7} />);
+  test('displays an empty state before any message has been sent', () => {
+    const { getByText } = render(<HomeScreen lastMessage={null} />);
 
-      expect(getByTestId('sent-today-count').props.children).toEqual([
-        'Sent today: ',
-        7,
-      ]);
-    });
+    expect(getByText('No messages sent yet')).toBeTruthy();
+  });
 
-    test('displays zero when no messages have been sent today', () => {
-      const { getByTestId } = render(<HomeScreen sentTodayCount={0} />);
+  test.each([0, 7, 1234])('displays a sent-today count of %s', (count) => {
+    const { getByText } = render(<HomeScreen sentTodayCount={count} />);
 
-      expect(getByTestId('sent-today-count').props.children).toEqual([
-        'Sent today: ',
-        0,
-      ]);
-    });
+    expect(getByText(String(count))).toBeTruthy();
+    expect(getByText('Sent Today')).toBeTruthy();
+  });
+
+  test('calls the gateway mode handler from the visible action', () => {
+    const onToggleGateway = jest.fn();
+    const { getByText } = render(
+      <HomeScreen gatewayOnline onToggleGateway={onToggleGateway} />
+    );
+
+    fireEvent.press(getByText('Go offline'));
+
+    expect(onToggleGateway).toHaveBeenCalledTimes(1);
   });
 });

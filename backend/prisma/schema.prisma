@@ -40,6 +40,7 @@ model Message {
   api_key         ApiKey?       @relation(fields: [api_key_id], references: [id], onDelete: SetNull)
 
   @@index([api_key_id])
+  @@index([user_id, status, created_at, id])
 }
 
 enum MessageStatus {
@@ -76,11 +77,16 @@ model Device {
   model             String    @default("Unknown")
   paired_at         DateTime  @default(now())
   last_seen         DateTime?
+  last_polled_at    DateTime?
+  last_assigned_at  DateTime?
   is_active         Boolean   @default(true)
   is_connected      Boolean   @default(false)
   messages_sent     Int       @default(0)
   user              User      @relation(fields: [user_id], references: [id])
   messages          Message[]
+
+  @@index([user_id, last_assigned_at])
+  @@index([user_id, last_polled_at])
 }
 
 model PairingCode {

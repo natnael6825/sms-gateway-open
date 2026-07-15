@@ -1,364 +1,203 @@
-// Feature: sms-gateway-v2, Property 8: Webhook Delivery Updates Status and Timestamps
-
 'use strict';
 
-const fc = require('fast-check');
-
-// Mock the Prisma client before requiring the controller
-jest.mock('../../prisma/client', () => ({
-  message: {
-    findUnique: jest.fn(),
-    update: jest.fn(),
-  },
-}));
+jest.mock('../../prisma/client', () => {
+  const client = {
+    message: {
+      findUnique: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    device: { updateMany: jest.fn() },
+  };
+  client.$transaction = jest.fn(async (callback) => callback(client));
+  return client;
+});
 
 const prisma = require('../../prisma/client');
 const { reportDelivery } = require('../webhook.controller');
 
-/**
- * Validates: Requirements 4.3, 8.4
- *
- * Property 8: Webhook Delivery Updates Status and Timestamps.
- *
- * For any message with status = "dispatched", calling reportDelivery() with
- * status: "sent" or status: "failed" SHALL update the message's status to the
- * reported value, set delivered_at to a non-null timestamp, and return HTTP 200.
- */
-describe('v2 Property 8: Webhook Delivery Updates Status and Timestamps', () => {
+function response() {
+  return {
+    statusCode: null,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+}
+
+function request({
+  id = 12,
+  status = 'sent',
+  userId = 4,
+  deviceId = 8,
+} = {}) {
+  return {
+    params: { id: String(id) },
+    body: { status },
+    device: { userId, deviceId },
+  };
+}
+
+function message(overrides = {}) {
+  return {
+    id: 12,
+    user_id: 4,
+    device_id: 8,
+    status: 'dispatched',
+    dispatched_at: new Date(Date.now() - 1_000),
+    delivered_at: null,
+    ...overrides,
+  };
+}
+
+describe('reportDelivery', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('updates status and sets delivered_at for any dispatched message with sent or failed', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 1000 }),       // userId
-        fc.integer({ min: 1 }),                   // messageId
-        fc.constantFrom('sent', 'failed'),         // valid delivery status
-        async (userId, messageId, deliveryStatus) => {
-          const dispatchedMessage = {
-            id: messageId,
-            user_id: userId,
-            phone_number: '+15551234567',
-            message_text: 'Test message',
-            status: 'dispatched',
-            created_at: new Date('2024-01-01T00:00:00.000Z'),
-            updated_at: new Date('2024-01-01T00:00:00.000Z'),
-            dispatched_at: new Date('2024-01-01T01:00:00.000Z'),
-            delivered_at: null,
-          };
+  test.each(['sent', 'failed'])('atomically transitions a dispatched message to %s', async (status) => {
+    const claimed = message();
+    const terminal = message({ status, delivered_at: new Date() });
+    prisma.message.findUnique
+      .mockResolvedValueOnce(claimed)
+      .mockResolvedValueOnce(terminal);
+    prisma.message.updateMany.mockResolvedValue({ count: 1 });
+    prisma.device.updateMany.mockResolvedValue({ count: 1 });
+    const res = response();
 
-          let capturedUpdateData = null;
+    await reportDelivery(request({ status }), res);
 
-          prisma.message.findUnique.mockResolvedValue(dispatchedMessage);
-          prisma.message.update.mockImplementation(async ({ where, data }) => {
-            capturedUpdateData = data;
-            return {
-              ...dispatchedMessage,
-              status: data.status,
-              delivered_at: data.delivered_at,
-              updated_at: data.updated_at,
-            };
-          });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(terminal);
+    expect(prisma.message.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 12,
+        user_id: 4,
+        device_id: 8,
+        status: 'dispatched',
+        dispatched_at: { gt: expect.any(Date) },
+      },
+      data: {
+        status,
+        delivered_at: expect.any(Date),
+        updated_at: expect.any(Date),
+      },
+    });
 
-          const req = {
-            params: { id: String(messageId) },
-            body: { status: deliveryStatus },
-            device: { userId },
-          };
-
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
-
-          const before = new Date();
-          await reportDelivery(req, res);
-          const after = new Date();
-
-          // 1. HTTP 200
-          expect(statusCode).toBe(200);
-
-          // 2. Returned message has the reported status
-          expect(responseBody.status).toBe(deliveryStatus);
-
-          // 3. delivered_at is set (non-null)
-          expect(responseBody.delivered_at).not.toBeNull();
-
-          // 4. The update was called with correct data
-          expect(capturedUpdateData).not.toBeNull();
-          expect(capturedUpdateData.status).toBe(deliveryStatus);
-          expect(capturedUpdateData.delivered_at).toBeInstanceOf(Date);
-          expect(capturedUpdateData.updated_at).toBeInstanceOf(Date);
-
-          // 5. findUnique was called with the correct message id
-          expect(prisma.message.findUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: messageId } })
-          );
-
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
+    if (status === 'sent') {
+      expect(prisma.device.updateMany).toHaveBeenCalledWith({
+        where: { id: 8, user_id: 4 },
+        data: { messages_sent: { increment: 1 } },
+      });
+    } else {
+      expect(prisma.device.updateMany).not.toHaveBeenCalled();
+    }
   });
 
-  it('sets delivered_at to a timestamp within the test execution window', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 1000 }),
-        fc.integer({ min: 1 }),
-        fc.constantFrom('sent', 'failed'),
-        async (userId, messageId, deliveryStatus) => {
-          const dispatchedMessage = {
-            id: messageId,
-            user_id: userId,
-            phone_number: '+15551234567',
-            message_text: 'Test',
-            status: 'dispatched',
-            created_at: new Date(),
-            updated_at: new Date(),
-            dispatched_at: new Date(),
-            delivered_at: null,
-          };
+  test('acknowledges a late sent report after timeout without changing failed', async () => {
+    const timedOut = message({ status: 'failed' });
+    prisma.message.findUnique.mockResolvedValue(timedOut);
+    const res = response();
 
-          let capturedDeliveredAt = null;
+    await reportDelivery(request({ status: 'sent' }), res);
 
-          prisma.message.findUnique.mockResolvedValue(dispatchedMessage);
-          prisma.message.update.mockImplementation(async ({ data }) => {
-            capturedDeliveredAt = data.delivered_at;
-            return { ...dispatchedMessage, ...data };
-          });
-
-          const before = new Date();
-
-          const req = {
-            params: { id: String(messageId) },
-            body: { status: deliveryStatus },
-            device: { userId },
-          };
-          const res = {
-            status() { return this; },
-            json() { return this; },
-          };
-
-          await reportDelivery(req, res);
-
-          const after = new Date();
-
-          // delivered_at must be within the test execution window
-          expect(capturedDeliveredAt).toBeInstanceOf(Date);
-          expect(capturedDeliveredAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
-          expect(capturedDeliveredAt.getTime()).toBeLessThanOrEqual(after.getTime());
-
-          return true;
-        }
-      ),
-      { numRuns: 50 }
-    );
-  });
-});
-
-// Edge case: invalid status → 400
-describe('v2 Property 8 edge case: invalid status returns HTTP 400', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(timedOut);
+    expect(prisma.message.updateMany).not.toHaveBeenCalled();
+    expect(prisma.device.updateMany).not.toHaveBeenCalled();
   });
 
-  it('returns HTTP 400 for any status value that is not sent or failed', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.string().filter((s) => s !== 'sent' && s !== 'failed'),
-        fc.integer({ min: 1 }),
-        fc.integer({ min: 1 }),
-        async (invalidStatus, userId, messageId) => {
-          const req = {
-            params: { id: String(messageId) },
-            body: { status: invalidStatus },
-            device: { userId },
-          };
+  test('turns an overdue dispatched message into failed before accepting a late sent report', async () => {
+    const overdue = message({ dispatched_at: new Date(Date.now() - 60_001) });
+    const failed = message({ status: 'failed', dispatched_at: overdue.dispatched_at, delivered_at: new Date() });
+    prisma.message.findUnique
+      .mockResolvedValueOnce(overdue)
+      .mockResolvedValueOnce(failed);
+    prisma.message.updateMany.mockResolvedValue({ count: 1 });
+    const res = response();
 
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
+    await reportDelivery(request({ status: 'sent' }), res);
 
-          await reportDelivery(req, res);
-
-          // Must return HTTP 400
-          expect(statusCode).toBe(400);
-          expect(responseBody).toHaveProperty('error', 'Invalid status');
-
-          // findUnique must NOT have been called (validation happens first)
-          expect(prisma.message.findUnique).not.toHaveBeenCalled();
-
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
-  });
-});
-
-// Edge case: non-existent message id → 404
-describe('v2 Property 8 edge case: non-existent message returns HTTP 404', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(failed);
+    expect(prisma.message.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 12,
+        user_id: 4,
+        device_id: 8,
+        status: 'dispatched',
+        OR: [
+          { dispatched_at: null },
+          { dispatched_at: { lte: expect.any(Date) } },
+        ],
+      },
+      data: { status: 'failed', delivered_at: expect.any(Date), updated_at: expect.any(Date) },
+    });
+    expect(prisma.device.updateMany).not.toHaveBeenCalled();
   });
 
-  it('returns HTTP 404 when the message does not exist', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1 }),
-        fc.integer({ min: 1 }),
-        fc.constantFrom('sent', 'failed'),
-        async (userId, messageId, deliveryStatus) => {
-          // Message not found
-          prisma.message.findUnique.mockResolvedValue(null);
+  test('acknowledges the terminal status when the timeout wins the update race', async () => {
+    const claimed = message();
+    const timedOut = message({ status: 'failed' });
+    prisma.message.findUnique
+      .mockResolvedValueOnce(claimed)
+      .mockResolvedValueOnce(timedOut);
+    prisma.message.updateMany.mockResolvedValue({ count: 0 });
+    const res = response();
 
-          const req = {
-            params: { id: String(messageId) },
-            body: { status: deliveryStatus },
-            device: { userId },
-          };
+    await reportDelivery(request({ status: 'sent' }), res);
 
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
-
-          await reportDelivery(req, res);
-
-          expect(statusCode).toBe(404);
-          expect(responseBody).toHaveProperty('error', 'Message not found');
-
-          // update must NOT have been called
-          expect(prisma.message.update).not.toHaveBeenCalled();
-
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
-  });
-});
-
-// Edge case: wrong user (message belongs to different user) → 401
-describe('v2 Property 8 edge case: wrong user returns HTTP 401', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(timedOut);
+    expect(prisma.device.updateMany).not.toHaveBeenCalled();
   });
 
-  it('returns HTTP 401 when the message belongs to a different user', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 500 }),    // deviceUserId
-        fc.integer({ min: 501, max: 1000 }), // messageOwnerUserId (guaranteed different)
-        fc.integer({ min: 1 }),              // messageId
-        fc.constantFrom('sent', 'failed'),
-        async (deviceUserId, messageOwnerUserId, messageId, deliveryStatus) => {
-          const message = {
-            id: messageId,
-            user_id: messageOwnerUserId, // belongs to a different user
-            phone_number: '+15551234567',
-            message_text: 'Test',
-            status: 'dispatched',
-            created_at: new Date(),
-            updated_at: new Date(),
-            dispatched_at: new Date(),
-            delivered_at: null,
-          };
+  test('rejects a report from another phone owned by the same user', async () => {
+    prisma.message.findUnique.mockResolvedValue(message());
+    const res = response();
 
-          prisma.message.findUnique.mockResolvedValue(message);
+    await reportDelivery(request({ deviceId: 99 }), res);
 
-          const req = {
-            params: { id: String(messageId) },
-            body: { status: deliveryStatus },
-            device: { userId: deviceUserId }, // different from message.user_id
-          };
-
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
-
-          await reportDelivery(req, res);
-
-          expect(statusCode).toBe(401);
-          expect(responseBody).toHaveProperty('error', 'Unauthorized');
-
-          // update must NOT have been called
-          expect(prisma.message.update).not.toHaveBeenCalled();
-
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
-  });
-});
-
-// Edge case: non-dispatched message → 409
-describe('v2 Property 8 edge case: non-dispatched message returns HTTP 409', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'Message is assigned to another device' });
+    expect(prisma.message.updateMany).not.toHaveBeenCalled();
   });
 
-  it('returns HTTP 409 when the message is not in dispatched state', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 1000 }),              // userId
-        fc.integer({ min: 1 }),                          // messageId
-        fc.constantFrom('pending', 'sent', 'failed'),    // non-dispatched status
-        fc.constantFrom('sent', 'failed'),               // valid delivery status
-        async (userId, messageId, currentStatus, deliveryStatus) => {
-          const message = {
-            id: messageId,
-            user_id: userId,
-            phone_number: '+15551234567',
-            message_text: 'Test',
-            status: currentStatus, // not 'dispatched'
-            created_at: new Date(),
-            updated_at: new Date(),
-            dispatched_at: currentStatus !== 'pending' ? new Date() : null,
-            delivered_at: currentStatus === 'sent' || currentStatus === 'failed' ? new Date() : null,
-          };
+  test('rejects a report for another owner', async () => {
+    prisma.message.findUnique.mockResolvedValue(message({ user_id: 99 }));
+    const res = response();
 
-          prisma.message.findUnique.mockResolvedValue(message);
+    await reportDelivery(request(), res);
 
-          const req = {
-            params: { id: String(messageId) },
-            body: { status: deliveryStatus },
-            device: { userId },
-          };
+    expect(res.statusCode).toBe(401);
+    expect(prisma.message.updateMany).not.toHaveBeenCalled();
+  });
 
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
+  test('returns 404 for a missing message', async () => {
+    prisma.message.findUnique.mockResolvedValue(null);
+    const res = response();
 
-          await reportDelivery(req, res);
+    await reportDelivery(request(), res);
 
-          expect(statusCode).toBe(409);
-          expect(responseBody).toHaveProperty('error', 'Message is not in dispatched state');
+    expect(res.statusCode).toBe(404);
+    expect(prisma.message.updateMany).not.toHaveBeenCalled();
+  });
 
-          // update must NOT have been called
-          expect(prisma.message.update).not.toHaveBeenCalled();
+  test('returns 409 for a non-terminal message that is not dispatched', async () => {
+    prisma.message.findUnique.mockResolvedValue(message({ status: 'pending', device_id: 8 }));
+    const res = response();
 
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
+    await reportDelivery(request(), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(prisma.message.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects invalid delivery status before querying the database', async () => {
+    const res = response();
+
+    await reportDelivery(request({ status: 'pending' }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });

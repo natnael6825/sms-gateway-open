@@ -1,5 +1,5 @@
 // Feature: sms-gateway, Property 5: New messages always start as pending and belong to the creating user
-// (v2 properties 6, 7, 12, 13, 15 are appended at the bottom of this file)
+// (v2 queue and transition properties are appended at the bottom of this file)
 
 'use strict';
 
@@ -13,12 +13,46 @@ jest.mock('../../prisma/client', () => ({
     findFirst: jest.fn(),
     findUnique: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   },
+  device: {
+    findMany: jest.fn(),
+    update: jest.fn(),
+    updateMany: jest.fn(),
+  },
+  $queryRaw: jest.fn(),
   $transaction: jest.fn(),
 }));
 
 const prisma = require('../../prisma/client');
 const { createMessage } = require('../messages.controller');
+
+function rawSql(call) {
+  return Array.from(call[0]).join(' ');
+}
+
+function mockPendingClaim({ deviceId, pendingMessage, connectedDevices }) {
+  const devices = connectedDevices || [{ id: deviceId, last_assigned_at: null }];
+
+  prisma.device.findMany.mockReset();
+  prisma.device.update.mockReset();
+  prisma.device.updateMany.mockReset();
+  prisma.message.update.mockReset();
+  prisma.$queryRaw.mockReset();
+  prisma.device.findMany.mockResolvedValue(devices);
+  prisma.device.update.mockResolvedValue({ id: deviceId });
+  prisma.device.updateMany.mockResolvedValue({ count: 1 });
+  prisma.$queryRaw.mockImplementation(async (strings) => {
+    const sql = Array.from(strings).join(' ');
+    if (sql.includes('FROM "User"')) return [{ id: 1 }];
+    if (sql.includes('FROM "Message"')) return pendingMessage ? [{ id: pendingMessage.id }] : [];
+    throw new Error(`Unexpected raw query in test: ${sql}`);
+  });
+  prisma.message.update.mockImplementation(async ({ data }) => ({
+    ...pendingMessage,
+    ...data,
+  }));
+}
 
 /**
  * Validates: Requirements 3.1, 3.4
@@ -295,6 +329,7 @@ describe('Property 9: Pending endpoint always returns the oldest pending message
 
   it('always returns the message with the earliest created_at among all pending messages', async () => {
     const DEVICE_USER_ID = 42;
+    const DEVICE_ID = 7;
 
     await fc.assert(
       fc.asyncProperty(
@@ -316,12 +351,11 @@ describe('Property 9: Pending endpoint always returns the oldest pending message
 
           const dispatchedOldest = { ...oldestMessage, status: 'dispatched', dispatched_at: new Date() };
 
-          // Mock prisma.message.findFirst to return the oldest message
-          prisma.message.findFirst.mockResolvedValue(oldestMessage);
+          mockPendingClaim({ deviceId: DEVICE_ID, pendingMessage: oldestMessage });
           prisma.message.update.mockResolvedValue(dispatchedOldest);
 
           // v2: req.device is required
-          const req = { device: { userId: DEVICE_USER_ID } };
+          const req = { device: { userId: DEVICE_USER_ID, deviceId: DEVICE_ID } };
           let statusCode = null;
           let responseBody = null;
           const res = {
@@ -345,6 +379,12 @@ describe('Property 9: Pending endpoint always returns the oldest pending message
           for (const msg of messages) {
             expect(responseBody.created_at <= msg.created_at).toBe(true);
           }
+
+          const messageClaim = prisma.$queryRaw.mock.calls.find((call) =>
+            rawSql(call).includes('FROM "Message"')
+          );
+          expect(messageClaim).toBeDefined();
+          expect(messageClaim.slice(1)).toContain(DEVICE_USER_ID);
 
           return true;
         }
@@ -534,6 +574,7 @@ describe('v2 Property 6: Device Token Scopes Pending Messages to Paired User', (
         fc.integer({ min: 501, max: 1000 }), // otherUserId (guaranteed distinct)
         fc.integer({ min: 1 }),              // messageId
         async (deviceUserId, otherUserId, messageId) => {
+          const deviceId = 2001;
           // The pending message belongs to deviceUserId
           const pendingMessage = {
             id: messageId,
@@ -550,11 +591,10 @@ describe('v2 Property 6: Device Token Scopes Pending Messages to Paired User', (
             dispatched_at: new Date(),
           };
 
-          // findFirst returns the pending message (scoped to deviceUserId by the controller)
-          prisma.message.findFirst.mockResolvedValue(pendingMessage);
+          mockPendingClaim({ deviceId, pendingMessage });
           prisma.message.update.mockResolvedValue(dispatchedMessage);
 
-          const req = { device: { userId: deviceUserId } };
+          const req = { device: { userId: deviceUserId, deviceId } };
           let statusCode = null;
           let responseBody = null;
           const res = {
@@ -572,12 +612,12 @@ describe('v2 Property 6: Device Token Scopes Pending Messages to Paired User', (
           expect(responseBody.user_id).toBe(deviceUserId);
           expect(responseBody.user_id).not.toBe(otherUserId);
 
-          // 3. findFirst was called with the correct user_id scope
-          expect(prisma.message.findFirst).toHaveBeenCalledWith(
-            expect.objectContaining({
-              where: expect.objectContaining({ user_id: deviceUserId }),
-            })
+          // 3. Both raw locks/claims are parameterized with this owner.
+          const ownerScopedCalls = prisma.$queryRaw.mock.calls.filter((call) =>
+            rawSql(call).includes('FROM "User"') || rawSql(call).includes('FROM "Message"')
           );
+          expect(ownerScopedCalls).toHaveLength(2);
+          ownerScopedCalls.forEach((call) => expect(call.slice(1)).toContain(deviceUserId));
 
           return true;
         }
@@ -591,10 +631,10 @@ describe('v2 Property 6: Device Token Scopes Pending Messages to Paired User', (
       fc.asyncProperty(
         fc.integer({ min: 1, max: 1000 }),
         async (deviceUserId) => {
-          // No pending messages
-          prisma.message.findFirst.mockResolvedValue(null);
+          const deviceId = 2001;
+          mockPendingClaim({ deviceId, pendingMessage: null });
 
-          const req = { device: { userId: deviceUserId } };
+          const req = { device: { userId: deviceUserId, deviceId } };
           let statusCode = null;
           let responseBody = 'NOT_SET';
           const res = {
@@ -668,6 +708,7 @@ describe('v2 Property 7: Pending Pickup Atomically Transitions to Dispatched', (
         fc.integer({ min: 1 }),              // messageId
         fc.date(),                           // created_at
         async (userId, messageId, createdAt) => {
+          const deviceId = 9;
           const pendingMessage = {
             id: messageId,
             user_id: userId,
@@ -681,7 +722,7 @@ describe('v2 Property 7: Pending Pickup Atomically Transitions to Dispatched', (
           let capturedUpdateData = null;
           const dispatchedAt = new Date();
 
-          prisma.message.findFirst.mockResolvedValue(pendingMessage);
+          mockPendingClaim({ deviceId, pendingMessage });
           prisma.message.update.mockImplementation(async ({ where, data }) => {
             capturedUpdateData = data;
             return {
@@ -691,7 +732,7 @@ describe('v2 Property 7: Pending Pickup Atomically Transitions to Dispatched', (
             };
           });
 
-          const req = { device: { userId } };
+          const req = { device: { userId, deviceId } };
           let statusCode = null;
           let responseBody = null;
           const res = {
@@ -724,94 +765,29 @@ describe('v2 Property 7: Pending Pickup Atomically Transitions to Dispatched', (
             })
           );
 
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
-  });
-});
-
-// Feature: sms-gateway-v2, Property 12: Retry Resets Failed Messages to Pending
-
-/**
- * Validates: Requirements 6.3
- *
- * Property 12: Retry Resets Failed Messages to Pending.
- *
- * For any message with status = "failed", calling retryMessage() with a valid
- * device token SHALL set the message's status to "pending" and return HTTP 200.
- * dispatched_at and delivered_at SHALL be cleared (null).
- */
-describe('v2 Property 12: Retry Resets Failed Messages to Pending', () => {
-  let retryMessage;
-
-  beforeAll(() => {
-    retryMessage = require('../messages.controller').retryMessage;
-  });
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('resets a failed message to pending and clears timestamps', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 1000 }),  // userId
-        fc.integer({ min: 1 }),              // messageId
-        async (userId, messageId) => {
-          const failedMessage = {
-            id: messageId,
-            user_id: userId,
-            phone_number: '+15551234567',
-            message_text: 'Test',
-            status: 'failed',
-            created_at: new Date(),
-            dispatched_at: new Date(),
-            delivered_at: new Date(),
-          };
-
-          let capturedUpdateData = null;
-
-          prisma.message.findUnique.mockResolvedValue(failedMessage);
-          prisma.message.update.mockImplementation(async ({ data }) => {
-            capturedUpdateData = data;
-            return {
-              ...failedMessage,
-              status: data.status,
-              dispatched_at: data.dispatched_at,
-              delivered_at: data.delivered_at,
-            };
+          const ownerLock = prisma.$queryRaw.mock.calls.find((call) =>
+            rawSql(call).includes('FROM "User"')
+          );
+          const messageLock = prisma.$queryRaw.mock.calls.find((call) =>
+            rawSql(call).includes('FROM "Message"')
+          );
+          expect(rawSql(ownerLock)).toMatch(/FOR\s+UPDATE/i);
+          expect(rawSql(messageLock)).toMatch(/FOR\s+UPDATE\s+SKIP\s+LOCKED/i);
+          expect(prisma.device.update).toHaveBeenCalledWith(expect.objectContaining({
+            where: { id: deviceId },
+            data: expect.objectContaining({ last_assigned_at: expect.any(Date) }),
+          }));
+          expect(prisma.device.updateMany).toHaveBeenCalledWith({
+            where: { id: deviceId, user_id: userId, is_active: true },
+            data: {
+              last_polled_at: expect.any(Date),
+              last_seen: expect.any(Date),
+              is_connected: true,
+            },
           });
-
-          const req = {
-            params: { id: String(messageId) },
-            device: { userId },
-          };
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
-
-          await retryMessage(req, res);
-
-          // 1. HTTP 200
-          expect(statusCode).toBe(200);
-
-          // 2. Returned message has status 'pending'
-          expect(responseBody.status).toBe('pending');
-
-          // 3. dispatched_at and delivered_at are cleared
-          expect(responseBody.dispatched_at).toBeNull();
-          expect(responseBody.delivered_at).toBeNull();
-
-          // 4. Update was called with correct data
-          expect(capturedUpdateData).not.toBeNull();
-          expect(capturedUpdateData.status).toBe('pending');
-          expect(capturedUpdateData.dispatched_at).toBeNull();
-          expect(capturedUpdateData.delivered_at).toBeNull();
+          expect(prisma.device.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ last_polled_at: { gte: expect.any(Date) } }),
+          }));
 
           return true;
         }
@@ -821,110 +797,96 @@ describe('v2 Property 12: Retry Resets Failed Messages to Pending', () => {
   });
 });
 
-// Feature: sms-gateway-v2, Property 13: Retry Rejects Non-Failed Messages with 409
-
-/**
- * Validates: Requirements 6.5
- *
- * Property 13: Retry Rejects Non-Failed Messages with 409.
- *
- * For any message with status in { pending, dispatched, sent }, calling
- * retryMessage() SHALL return HTTP 409.
- */
-describe('v2 Property 13: Retry Rejects Non-Failed Messages with 409', () => {
-  let retryMessage;
+describe('Round-robin dispatch across connected phones', () => {
+  const userId = 42;
+  let getPendingMessage;
 
   beforeAll(() => {
-    retryMessage = require('../messages.controller').retryMessage;
+    getPendingMessage = require('../messages.controller').getPendingMessage;
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prisma.$transaction.mockImplementation(async (fn) => fn(prisma));
   });
 
-  it('returns HTTP 409 for any non-failed status', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 1000 }),                    // userId
-        fc.integer({ min: 1 }),                                // messageId
-        fc.constantFrom('pending', 'dispatched', 'sent'),      // non-failed status
-        async (userId, messageId, status) => {
-          const message = {
-            id: messageId,
-            user_id: userId,
-            phone_number: '+15551234567',
-            message_text: 'Test',
-            status,
-            created_at: new Date(),
-          };
+  it('assigns one message per phone per round regardless of sent or failed outcomes', async () => {
+    const devices = [1, 2, 3].map((id) => ({ id, last_assigned_at: null }));
+    const messages = Array.from({ length: 6 }, (_, index) => ({
+      id: index + 1,
+      user_id: userId,
+      status: 'pending',
+      created_at: new Date(2026, 0, 1, 0, 0, index),
+    }));
 
-          prisma.message.findUnique.mockResolvedValue(message);
+    prisma.device.updateMany.mockResolvedValue({ count: 1 });
+    prisma.device.findMany.mockImplementation(async () => devices.map((device) => ({ ...device })));
+    prisma.$queryRaw.mockImplementation(async (strings) => {
+      const sql = Array.from(strings).join(' ');
+      if (sql.includes('FROM "User"')) return [{ id: userId }];
+      if (sql.includes('FROM "Message"')) {
+        const pending = messages
+          .filter((message) => message.status === 'pending')
+          .sort((a, b) => a.created_at - b.created_at || a.id - b.id)[0];
+        return pending ? [{ id: pending.id }] : [];
+      }
+      throw new Error(`Unexpected raw query in test: ${sql}`);
+    });
+    prisma.message.update.mockImplementation(async ({ where, data }) => {
+      const message = messages.find((candidate) => candidate.id === where.id);
+      Object.assign(message, data);
+      return { ...message };
+    });
+    prisma.device.update.mockImplementation(async ({ where, data }) => {
+      const device = devices.find((candidate) => candidate.id === where.id);
+      Object.assign(device, data);
+      return { ...device };
+    });
 
-          const req = {
-            params: { id: String(messageId) },
-            device: { userId },
-          };
-          let statusCode = null;
-          let responseBody = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json(body) { responseBody = body; return this; },
-          };
+    async function poll(deviceId) {
+      let body;
+      await getPendingMessage(
+        { device: { userId, deviceId } },
+        {
+          status(code) { expect(code).toBe(200); return this; },
+          json(value) { body = value; return this; },
+        },
+      );
+      return body;
+    }
 
-          await retryMessage(req, res);
+    // Phone 2 cannot take phone 1's first turn, and no message is broadcast.
+    expect(await poll(2)).toBeNull();
+    expect(messages.every((message) => message.status === 'pending')).toBe(true);
 
-          // Must return HTTP 409
-          expect(statusCode).toBe(409);
-          expect(responseBody).toHaveProperty('error');
+    const assignedDevices = [];
+    for (const deviceId of [1, 2, 3, 1, 2, 3]) {
+      const claimed = await poll(deviceId);
+      expect(claimed).not.toBeNull();
+      expect(claimed.device_id).toBe(deviceId);
+      assignedDevices.push(claimed.device_id);
 
-          // update must NOT have been called
-          expect(prisma.message.update).not.toHaveBeenCalled();
+      // Terminal outcome does not affect the next device's turn.
+      messages.find((message) => message.id === claimed.id).status =
+        claimed.id % 2 === 0 ? 'sent' : 'failed';
+    }
 
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
+    expect(assignedDevices).toEqual([1, 2, 3, 1, 2, 3]);
+    expect(messages.map((message) => message.device_id)).toEqual([1, 2, 3, 1, 2, 3]);
+    expect(messages.filter((message) => message.status === 'failed')).toHaveLength(3);
+    expect(messages.filter((message) => message.status === 'sent')).toHaveLength(3);
   });
+});
 
-  it('returns HTTP 404 when message belongs to a different user', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 1, max: 500 }),   // deviceUserId
-        fc.integer({ min: 501, max: 1000 }), // messageOwnerUserId (different)
-        fc.integer({ min: 1 }),              // messageId
-        async (deviceUserId, messageOwnerUserId, messageId) => {
-          const message = {
-            id: messageId,
-            user_id: messageOwnerUserId, // belongs to a different user
-            phone_number: '+15551234567',
-            message_text: 'Test',
-            status: 'failed',
-            created_at: new Date(),
-          };
+describe('Manual retry is not exposed', () => {
+  it('has neither a retry route nor a retry controller export', () => {
+    const router = require('../../routes/messages.routes');
+    const routePaths = router.stack
+      .filter((layer) => layer.route)
+      .map((layer) => layer.route.path);
 
-          prisma.message.findUnique.mockResolvedValue(message);
-
-          const req = {
-            params: { id: String(messageId) },
-            device: { userId: deviceUserId },
-          };
-          let statusCode = null;
-          const res = {
-            status(code) { statusCode = code; return this; },
-            json() { return this; },
-          };
-
-          await retryMessage(req, res);
-
-          // Must return HTTP 404 (not 403, to avoid leaking existence)
-          expect(statusCode).toBe(404);
-
-          return true;
-        }
-      ),
-      { numRuns: 100 }
-    );
+    expect(routePaths).not.toContain('/:id/retry');
+    expect(require('../messages.controller').retryMessage).toBeUndefined();
   });
 });
 
@@ -939,7 +901,7 @@ describe('v2 Property 13: Retry Rejects Non-Failed Messages with 409', () => {
  *   pending → dispatched  (via getPendingMessage)
  *   dispatched → sent     (via updateMessageStatus)
  *   dispatched → failed   (via updateMessageStatus)
- *   failed → pending      (via retryMessage)
+ * Failed and sent messages are terminal; no manual retry transition exists.
  *
  * Any other transition via updateMessageStatus SHALL return HTTP 409.
  */

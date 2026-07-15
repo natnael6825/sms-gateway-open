@@ -55,7 +55,7 @@ function renderPage() {
 describe('MessagesPage pagination', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getDevices.mockResolvedValue([{ id: 4, is_connected: true, is_active: true }]);
+    getDevices.mockResolvedValue([{ id: 4, is_connected: true, dispatch_ready: true, is_active: true }]);
     sendMessage.mockResolvedValue({ id: 99 });
     getMessages.mockImplementation(async ({ page, pageSize, status }) => (
       paginatedResponse({
@@ -133,5 +133,13 @@ describe('MessagesPage pagination', () => {
 
   it('uses compact page items with ellipses for long histories', () => {
     expect(getPaginationItems(10, 20)).toEqual([1, 'ellipsis-1', 9, 10, 11, 'ellipsis-11', 20]);
+  });
+
+  it('keeps sending locked when a phone is reachable but its sender is not polling', async () => {
+    getDevices.mockResolvedValue([{ id: 4, is_connected: true, dispatch_ready: false, is_active: true }]);
+    renderPage();
+
+    expect(await screen.findByText('Connect an Android sender to send')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send Message' })).not.toBeInTheDocument();
   });
 });

@@ -148,7 +148,7 @@ export default function ApiPage() {
 
           <h3>Code samples</h3>
           <CodeSamples samples={samples} active={tab} onChange={setTab} label="Send message code samples" />
-          <h3>Responses</h3><div className="response-list">{[['201','Message accepted; returns a UUID and pending status'],['400','Invalid request body'],['401','Missing or invalid API key'],['409','No connected Android device'],['422','Message exceeds 1600 characters']].map(([status, text]) => <div key={status}><code>{status}</code><span>{text}</span></div>)}</div>
+          <h3>Responses</h3><div className="response-list">{[['201','Message accepted; returns a UUID and pending status'],['400','Invalid request body'],['401','Missing or invalid API key'],['409','No dispatch-ready Android device'],['422','Message exceeds 1600 characters']].map(([status, text]) => <div key={status}><code>{status}</code><span>{text}</span></div>)}</div>
         </div>
       </section>
 

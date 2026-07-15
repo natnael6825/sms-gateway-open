@@ -18,6 +18,7 @@ import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.UUID
@@ -36,6 +37,7 @@ class SmsForegroundService : Service() {
         private const val POLL_MS = 5_000L
         private const val RECONNECT_MS = 10_000L
         private const val SMS_CONFIRM_TIMEOUT_SEC = 30L
+        private const val REPORT_IDENTITY_KEY = "__device_identity"
 
         @Volatile private var notificationUpdatesEnabled = false
 
@@ -67,6 +69,7 @@ class SmsForegroundService : Service() {
                 notificationUpdatesEnabled = true
                 apiBaseUrl = intent.getStringExtra(EXTRA_API_URL) ?: ""
                 deviceToken = intent.getStringExtra(EXTRA_DEVICE_TOKEN) ?: ""
+                prepareDeliveryReportOutbox()
                 startForeground(NOTIFICATION_ID, buildNotification("Monitoring for messages…"))
                 startLoop()
             }
@@ -96,12 +99,14 @@ class SmsForegroundService : Service() {
 
     private fun pollAndSend() {
         if (stopping) return
-        if (deviceToken.isNotEmpty()) runCatching { sendHeartbeat() }
-
-        if (stopping) return
         if (!flushDeliveryReports()) {
             throw RuntimeException("delivery report outbox is waiting for network")
         }
+
+        // Only advertise a sender as ready after its durable report outbox is
+        // clear. The backend separately records actual pending-queue polls.
+        if (stopping) return
+        if (deviceToken.isNotEmpty()) runCatching { sendHeartbeat() }
 
         val conn = openConn("$apiBaseUrl/api/messages/pending", "GET")
         if (conn.responseCode != 200) throw RuntimeException("poll HTTP ${conn.responseCode}")
@@ -199,6 +204,29 @@ class SmsForegroundService : Service() {
 
     private fun enqueueDeliveryReport(id: Int, status: String) {
         reportPrefs.edit().putString(id.toString(), status).apply()
+    }
+
+    private fun prepareDeliveryReportOutbox() {
+        if (deviceToken.isEmpty()) return
+        val fingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(deviceToken.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val storedFingerprint = reportPrefs.getString(REPORT_IDENTITY_KEY, null)
+
+        when {
+            storedFingerprint == null -> {
+                // Preserve reports when upgrading an already-paired install.
+                reportPrefs.edit().putString(REPORT_IDENTITY_KEY, fingerprint).commit()
+            }
+            storedFingerprint != fingerprint -> {
+                // Reports from an old pairing can never authenticate with the
+                // new token. Keeping them would permanently block queue polls.
+                reportPrefs.edit()
+                    .clear()
+                    .putString(REPORT_IDENTITY_KEY, fingerprint)
+                    .commit()
+            }
+        }
     }
 
     private fun flushDeliveryReports(): Boolean {

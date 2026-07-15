@@ -18,6 +18,10 @@ jest.mock('../../prisma/client', () => ({
     findUnique: jest.fn(),
     update: jest.fn(),
   },
+  device: {
+    updateMany: jest.fn(),
+  },
+  $transaction: jest.fn(),
 }));
 
 const prisma = require('../../prisma/client');
@@ -332,8 +336,14 @@ describe('Property 5: Device Key Format', () => {
             capturedNewKey = data.device_key;
             return { id: userId, device_key: data.device_key };
           });
+          prisma.device.updateMany.mockResolvedValue({ count: 1 });
+          prisma.$transaction.mockImplementation(async (operations) => Promise.all(operations));
 
           const { req, res, getResponse } = buildReqRes(userId);
+          req.body = {
+            acknowledged: true,
+            confirmation: 'RESET ALL DEVICES',
+          };
           await resetDeviceKey(req, res);
 
           const { status, body } = getResponse();
@@ -341,6 +351,10 @@ describe('Property 5: Device Key Format', () => {
           expect(body).toHaveProperty('code');
           expect(body.code).toMatch(DEVICE_KEY_PATTERN);
           expect(capturedNewKey).toMatch(DEVICE_KEY_PATTERN);
+          expect(prisma.device.updateMany).toHaveBeenCalledWith({
+            where: { user_id: userId },
+            data: { is_active: false, is_connected: false },
+          });
 
           return true;
         }

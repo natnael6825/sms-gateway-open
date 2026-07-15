@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const prisma = require('../prisma/client');
+const { DISPATCH_READY_WINDOW_MS } = require('../services/dispatchPolicy');
 
 /**
  * POST /api/device/pair
@@ -112,7 +113,9 @@ async function listDevices(req, res) {
 
   try {
     // Mark devices as disconnected if not seen in last 60 seconds
-    const cutoff = new Date(Date.now() - 60_000);
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - 60_000);
+    const readyCutoff = new Date(now.getTime() - DISPATCH_READY_WINDOW_MS);
     await prisma.device.updateMany({
       where: { user_id: userId, is_connected: true, last_seen: { lt: cutoff } },
       data: { is_connected: false },
@@ -128,6 +131,7 @@ async function listDevices(req, res) {
         device_identifier: true,
         is_connected: true,
         last_seen: true,
+        last_polled_at: true,
         messages_sent: true,
         paired_at: true,
       },
@@ -140,6 +144,11 @@ async function listDevices(req, res) {
     });
     const enriched = devices.map((device) => ({
       ...device,
+      dispatch_ready: Boolean(
+        device.is_connected
+        && device.last_seen >= cutoff
+        && device.last_polled_at >= readyCutoff
+      ),
       claimed_count: stats.filter((row) => row.device_id === device.id).reduce((sum, row) => sum + row._count._all, 0),
       sent_count: stats.find((row) => row.device_id === device.id && row.status === 'sent')?._count._all || 0,
       failed_count: stats.find((row) => row.device_id === device.id && row.status === 'failed')?._count._all || 0,
@@ -166,7 +175,7 @@ async function getDeviceDetails(req, res) {
       where: { id: deviceId, user_id: userId, is_active: true },
       select: {
         id: true, name: true, model: true, device_identifier: true,
-        paired_at: true, last_seen: true, is_active: true, is_connected: true,
+        paired_at: true, last_seen: true, last_polled_at: true, is_active: true, is_connected: true,
       },
     });
     if (!device) return res.status(404).json({ error: 'Device not found' });
@@ -226,8 +235,11 @@ async function getDeviceDetails(req, res) {
     });
 
     const connected = device.is_connected && device.last_seen && (now - device.last_seen) < 60_000;
+    const dispatchReady = connected
+      && device.last_polled_at
+      && (now - device.last_polled_at) < DISPATCH_READY_WINDOW_MS;
     return res.status(200).json({
-      device: { ...device, is_connected: Boolean(connected) },
+      device: { ...device, is_connected: Boolean(connected), dispatch_ready: Boolean(dispatchReady) },
       stats: {
         assigned, sent, failed, pending: count('pending'), dispatched: count('dispatched'),
         sent_today: sentToday,

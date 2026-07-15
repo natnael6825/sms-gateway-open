@@ -51,7 +51,9 @@ flowchart LR
     Client -->|"Check status by UUID"| API
 ```
 
-The backend does not push directly to the phone. The Android app checks in, claims the next available job, sends it, and reports the outcome. This pull model also lets the phone restore unsent results after reconnecting.
+The backend does not push directly to the phone. The Android app checks in, claims the next available job, sends it, and reports the outcome. With multiple dispatch-ready phones, assignment follows a persistent round-robin order: each phone receives one job per round regardless of whether its previous job succeeded or failed. A phone must keep polling to remain in the rotation; a UI heartbeat alone cannot block healthy senders.
+
+Each message is assigned to exactly one phone. It is never automatically moved to another phone and there is no manual retry endpoint. A claimed message that has not reached `sent` or `failed` within 60 seconds becomes terminally `failed`; a late phone report is acknowledged without resending or changing that final result.
 
 ## Project layout
 

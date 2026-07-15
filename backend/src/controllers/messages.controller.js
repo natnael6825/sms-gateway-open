@@ -1,10 +1,14 @@
 const prisma = require('../prisma/client');
+const {
+  DISPATCH_READY_WINDOW_MS,
+  DISPATCH_TIMEOUT_MS,
+} = require('../services/dispatchPolicy');
 
 // Valid status transitions
 const VALID_TRANSITIONS = {
   pending: ['dispatched'],
   dispatched: ['sent', 'failed'],
-  failed: ['pending'],
+  failed: [],
   sent: [],
 };
 
@@ -21,6 +25,28 @@ function parsePositiveInteger(value, max = Number.MAX_SAFE_INTEGER) {
 
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed <= max ? parsed : null;
+}
+
+function assignmentTime(device) {
+  if (!device.last_assigned_at) return Number.NEGATIVE_INFINITY;
+  return new Date(device.last_assigned_at).getTime();
+}
+
+function compareRoundRobinOrder(a, b) {
+  const timeDifference = assignmentTime(a) - assignmentTime(b);
+  return timeDifference || a.id - b.id;
+}
+
+function nextAssignmentTime(devices, now = new Date()) {
+  const latestAssignment = devices.reduce(
+    (latest, device) => Math.max(latest, assignmentTime(device)),
+    Number.NEGATIVE_INFINITY,
+  );
+
+  // Keep the persisted values strictly increasing. PostgreSQL stores these
+  // timestamps with millisecond precision, and multiple claims can otherwise
+  // receive an identical value and break deterministic rotation by device ID.
+  return new Date(Math.max(now.getTime(), latestAssignment + 1));
 }
 
 /**
@@ -140,9 +166,10 @@ async function getUserMessages(req, res) {
 /**
  * GET /api/messages/pending
  * Requires device authentication (req.device set by deviceAuthMiddleware).
- * Uses a Prisma transaction to atomically:
- *   1. Find the oldest pending message for the device's user
- *   2. Update its status to 'dispatched' and set dispatched_at
+ * Serializes claims for an owner with a PostgreSQL row lock, then atomically:
+ *   1. Selects the connected phone least recently assigned a message
+ *   2. Lets only that phone claim the owner's oldest pending message
+ *   3. Persists the phone's turn and dispatches the message
  * Returns HTTP 200 with the dispatched message, or null if no pending messages exist.
  * Returns HTTP 401 if req.device is not present.
  */
@@ -153,36 +180,71 @@ async function getPendingMessage(req, res) {
 
   try {
     const message = await prisma.$transaction(async (tx) => {
-      const cutoff = new Date(Date.now() - 60_000);
+      // Device polling is concurrent. Locking the owner's row makes selection,
+      // message pickup, and rotation one indivisible operation for this owner.
+      // Other owners still claim messages concurrently.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "User"
+        WHERE "id" = ${req.device.userId}
+        FOR UPDATE
+      `;
+
+      const pollTime = new Date();
+      const pollRegistration = await tx.device.updateMany({
+        where: {
+          id: req.device.deviceId,
+          user_id: req.device.userId,
+          is_active: true,
+        },
+        data: {
+          last_polled_at: pollTime,
+          last_seen: pollTime,
+          is_connected: true,
+        },
+      });
+      if (pollRegistration.count !== 1) return null;
+
+      const cutoff = new Date(pollTime.getTime() - 60_000);
+      const readyCutoff = new Date(pollTime.getTime() - DISPATCH_READY_WINDOW_MS);
       const connected = await tx.device.findMany({
-        where: { user_id: req.device.userId, is_active: true, is_connected: true, last_seen: { gte: cutoff } },
-        select: { id: true },
+        where: {
+          user_id: req.device.userId,
+          is_active: true,
+          is_connected: true,
+          last_seen: { gte: cutoff },
+          last_polled_at: { gte: readyCutoff },
+        },
+        select: { id: true, last_assigned_at: true },
       });
       if (!connected.some((device) => device.id === req.device.deviceId)) return null;
 
-      const loads = await tx.message.groupBy({
-        by: ['device_id'],
-        where: { user_id: req.device.userId, device_id: { in: connected.map((device) => device.id) } },
-        _count: { _all: true },
-      });
-      const loadByDevice = new Map(loads.map((row) => [row.device_id, row._count._all]));
-      connected.sort((a, b) => (loadByDevice.get(a.id) || 0) - (loadByDevice.get(b.id) || 0) || a.id - b.id);
+      connected.sort(compareRoundRobinOrder);
       if (connected[0]?.id !== req.device.deviceId) return null;
 
-      const pending = await tx.message.findFirst({
-        where: { user_id: req.device.userId, status: 'pending' },
-        orderBy: { created_at: 'asc' },
-      });
+      const pendingRows = await tx.$queryRaw`
+        SELECT "id"
+        FROM "Message"
+        WHERE "user_id" = ${req.device.userId}
+          AND "status" = 'pending'::"MessageStatus"
+        ORDER BY "created_at" ASC, "id" ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      `;
+      const pending = pendingRows[0];
       if (!pending) return null;
 
+      const dispatchedAt = new Date();
+      const assignedAt = nextAssignmentTime(connected, dispatchedAt);
       const [updated] = await Promise.all([
         tx.message.update({
           where: { id: pending.id },
-          data: { status: 'dispatched', dispatched_at: new Date(), device_id: req.device.deviceId },
+          data: { status: 'dispatched', dispatched_at: dispatchedAt, device_id: req.device.deviceId },
         }),
         tx.device.update({
           where: { id: req.device.deviceId },
           data: {
+            last_assigned_at: assignedAt,
             last_seen: new Date(),
             is_connected: true,
           },
@@ -199,57 +261,49 @@ async function getPendingMessage(req, res) {
   }
 }
 
-/**
- * POST /api/messages/:id/retry
- * Requires device authentication (req.device set by deviceAuthMiddleware).
- * Resets a failed message back to pending status.
- * Returns HTTP 200 with the updated message on success.
- * Returns HTTP 404 if the message does not exist or belongs to a different user.
- * Returns HTTP 409 if the message is not in 'failed' state.
- */
-async function retryMessage(req, res) {
-  const { id } = req.params;
-
-  try {
-    const existing = await prisma.message.findUnique({
-      where: { id: parseInt(id) },
-    });
-
-    if (!existing || existing.user_id !== req.device.userId) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-
-    if (existing.status !== 'failed') {
-      return res.status(409).json({ error: 'Message is not in failed state' });
-    }
-
-    const updated = await prisma.message.update({
-      where: { id: parseInt(id) },
-      data: {
-        status: 'pending',
-        dispatched_at: null,
-        delivered_at: null,
-        send_started_at: null,
-        device_id: null,
-      },
-    });
-
-    return res.status(200).json(updated);
-  } catch (err) {
-    console.error('retryMessage error:', err);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-}
-
 async function markSendStarted(req, res) {
-  const id = parseInt(req.params.id);
+  const id = Number.parseInt(req.params.id, 10);
   try {
     const message = await prisma.message.findFirst({
       where: { id, user_id: req.device.userId, device_id: req.device.deviceId },
     });
     if (!message) return res.status(404).json({ error: 'Message not assigned to this device' });
     if (message.status !== 'dispatched') return res.status(409).json({ error: 'Message is not dispatched' });
-    const updated = await prisma.message.update({ where: { id }, data: { send_started_at: message.send_started_at || new Date() } });
+
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - DISPATCH_TIMEOUT_MS);
+    if (!message.dispatched_at || new Date(message.dispatched_at) <= cutoff) {
+      await prisma.message.updateMany({
+        where: {
+          id,
+          user_id: req.device.userId,
+          device_id: req.device.deviceId,
+          status: 'dispatched',
+          OR: [
+            { dispatched_at: null },
+            { dispatched_at: { lte: cutoff } },
+          ],
+        },
+        data: { status: 'failed', delivered_at: now },
+      });
+      return res.status(409).json({ error: 'Message dispatch timed out' });
+    }
+
+    const transition = await prisma.message.updateMany({
+      where: {
+        id,
+        user_id: req.device.userId,
+        device_id: req.device.deviceId,
+        status: 'dispatched',
+        dispatched_at: { gt: cutoff },
+      },
+      data: { send_started_at: message.send_started_at || now },
+    });
+    if (transition.count !== 1) {
+      return res.status(409).json({ error: 'Message is not dispatched' });
+    }
+
+    const updated = await prisma.message.findUnique({ where: { id } });
     return res.status(200).json(updated);
   } catch (err) {
     console.error('markSendStarted error:', err);
@@ -307,4 +361,12 @@ async function updateMessageStatus(req, res) {
   }
 }
 
-module.exports = { createMessage, getUserMessages, getPendingMessage, retryMessage, markSendStarted, updateMessageStatus };
+module.exports = {
+  createMessage,
+  getUserMessages,
+  getPendingMessage,
+  markSendStarted,
+  updateMessageStatus,
+  compareRoundRobinOrder,
+  nextAssignmentTime,
+};

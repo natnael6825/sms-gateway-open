@@ -99,7 +99,7 @@ export default function MessagesPage() {
 
       if (deviceResult.status === 'fulfilled') {
         setHasConnectedDevice(
-          deviceResult.value.some(device => device.is_active !== false && device.is_connected),
+          deviceResult.value.some(device => device.is_active !== false && device.dispatch_ready),
         );
         setDeviceStatusLoaded(true);
       }
@@ -165,8 +165,8 @@ export default function MessagesPage() {
           <span className="sender-unavailable-icon" aria-hidden="true">▯</span>
           <div>
             <p className="eyebrow">Sender unavailable</p>
-            <h2>Connect an Android phone to send</h2>
-            <p>Open SignalDesk on a paired phone and keep it online. Sending will unlock automatically when the device checks in.</p>
+            <h2>Connect an Android sender to send</h2>
+            <p>Open SignalDesk on a paired phone and keep its sender service online. Sending unlocks after the phone begins polling for work.</p>
             <Link to="/devices">Manage devices →</Link>
           </div>
         </section>

@@ -7,13 +7,11 @@ const {
   createMessage,
   getUserMessages,
   getPendingMessage,
-  retryMessage,
   markSendStarted,
 } = require('../controllers/messages.controller');
 
 // Device-authenticated routes
 router.get('/pending', deviceAuthMiddleware, getPendingMessage);
-router.post('/:id/retry', deviceAuthMiddleware, retryMessage);
 router.post('/:id/send-started', deviceAuthMiddleware, markSendStarted);
 
 // Authenticated routes
